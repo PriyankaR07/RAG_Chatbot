@@ -1,0 +1,48 @@
+# --- Core Framework ---
+
+streamlit
+
+langchain
+
+langchain-community
+
+langchain-core
+
+langchain-text-splitters
+ 
+# --- LLM & Vector Database ---
+
+langchain-ollama
+
+langchain-chroma
+
+chromadb
+ 
+# --- Database & Data Handling ---
+
+sqlalchemy
+
+pandas
+
+numpy
+ 
+# --- Document Loading & Processing ---
+
+pypdf
+
+openpyxl
+
+unstructured
+
+langchain-unstructured
+
+python-magic-bin ; sys_platform == 'win32'
+ 
+# --- OCR & Image Support (Optional but used in ingest.py) ---
+
+pdf2image
+
+pytesseract
+
+pillow
+ 
