@@ -1,10 +1,11 @@
-# ingest.py
+# ingest.py - UPDATED with Excel file_type fix
 from pathlib import Path
 import os
 import re
 from collections import defaultdict
 import textwrap
 import logging
+import pandas as pd
 
 # LangChain / Chroma imports
 from langchain_community.document_loaders import (
@@ -55,11 +56,126 @@ def ocr_pdf_to_documents(pdf_path):
                     print(f"[ingest][ocr] pytesseract failed on page {i}: {e}")
                     text = ""
                 if text and text.strip():
-                    docs.append(Document(page_content=text, metadata={"source": Path(pdf_path).name}))
+                    docs.append(Document(page_content=text, metadata={"source": Path(pdf_path).name, "file_type": "pdf"}))
     except Exception as e:
         print(f"[ingest][ocr] Failed to OCR {pdf_path}: {e}")
     print(f"[ingest][ocr] OCR produced {len(docs)} page documents for {pdf_path}")
     return docs
+
+def load_excel_enhanced(file_path):
+    """ENHANCED: Load Excel with rich content extraction and proper file_type metadata"""
+    documents = []
+    
+    try:
+        file_name = Path(file_path).name
+        print(f"[ingest][excel] Loading Excel file → {file_name}")
+        
+        # Read all sheets
+        excel_file = pd.ExcelFile(file_path)
+        print(f"[ingest][excel]   Found {len(excel_file.sheet_names)} sheet(s): {excel_file.sheet_names}")
+        
+        for sheet_name in excel_file.sheet_names:
+            try:
+                df = pd.read_excel(file_path, sheet_name=sheet_name)
+                
+                if df.empty:
+                    print(f"[ingest][excel]   ⚠ Sheet '{sheet_name}' is empty, skipping")
+                    continue
+                
+                print(f"[ingest][excel]   ✓ Sheet '{sheet_name}': {len(df)} rows × {len(df.columns)} columns")
+                
+                # Build rich, searchable content
+                content_parts = []
+                
+                # Header
+                content_parts.append(f"{'='*60}")
+                content_parts.append(f"EXCEL FILE: {file_name}")
+                content_parts.append(f"SHEET: {sheet_name}")
+                content_parts.append(f"{'='*60}\n")
+                
+                # Basic info
+                content_parts.append(f"📊 DIMENSIONS: {len(df)} rows × {len(df.columns)} columns\n")
+                
+                # Column information
+                content_parts.append(f"📋 COLUMNS ({len(df.columns)}):")
+                for i, col in enumerate(df.columns, 1):
+                    dtype = str(df[col].dtype)
+                    non_null = df[col].count()
+                    content_parts.append(f"  {i}. {col} (type: {dtype}, non-null: {non_null}/{len(df)})")
+                content_parts.append("")
+                
+                # Numeric summaries
+                numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+                if numeric_cols:
+                    content_parts.append("📈 NUMERIC DATA SUMMARY:")
+                    for col in numeric_cols:
+                        stats = df[col].describe()
+                        content_parts.append(
+                            f"  • {col}: min={stats['min']:.2f}, max={stats['max']:.2f}, "
+                            f"mean={stats['mean']:.2f}, median={stats['50%']:.2f}"
+                        )
+                    content_parts.append("")
+                
+                # Categorical summaries
+                categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+                if categorical_cols:
+                    content_parts.append("📝 CATEGORICAL DATA SUMMARY:")
+                    for col in categorical_cols[:5]:  # First 5 categorical
+                        unique_count = df[col].nunique()
+                        content_parts.append(f"  • {col}: {unique_count} unique values")
+                        if unique_count <= 10:
+                            top_vals = df[col].value_counts().head(5).to_dict()
+                            for val, count in top_vals.items():
+                                content_parts.append(f"    - '{val}': {count} occurrences")
+                    content_parts.append("")
+                
+                # Sample data (first 20 rows)
+                content_parts.append("📄 SAMPLE DATA (First 20 rows):")
+                content_parts.append(df.head(20).to_string(index=True))
+                content_parts.append("")
+                
+                # Row-by-row searchable format (ALL rows)
+                content_parts.append("🔍 DETAILED ROW DATA (All rows):")
+                for idx, row in df.iterrows():
+                    row_parts = []
+                    for col in df.columns:
+                        val = row[col]
+                        if pd.notna(val):  # Skip NaN
+                            row_parts.append(f"{col}={val}")
+                    if row_parts:
+                        content_parts.append(f"Row {idx}: {', '.join(row_parts)}")
+                
+                full_content = "\n".join(content_parts)
+                
+                # Create document with PROPER metadata
+                doc = Document(
+                    page_content=full_content,
+                    metadata={
+                        "source": file_name,
+                        "file_type": "excel",  # ← CRITICAL FIX: Set file_type to "excel"
+                        "sheet_name": sheet_name,
+                        "num_rows": len(df),
+                        "num_columns": len(df.columns),
+                        "columns": ", ".join(str(c) for c in df.columns),
+                        "has_numeric": len(numeric_cols) > 0,
+                        "has_categorical": len(categorical_cols) > 0
+                    }
+                )
+                
+                documents.append(doc)
+                print(f"[ingest][excel]     → Created document: {len(full_content):,} characters")
+                
+            except Exception as e:
+                print(f"[ingest][excel]   ❌ Error processing sheet '{sheet_name}': {e}")
+        
+        print(f"[ingest][excel] ✅ Loaded {len(documents)} sheet(s) from {file_name}\n")
+        
+    except Exception as e:
+        print(f"[ingest][excel] ❌ Error loading Excel file {file_path}: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return documents
 
 def load_all_documents():
     docs = []
@@ -79,27 +195,25 @@ def load_all_documents():
                     # Read SQL file content
                     content = file.read_text(encoding='utf-8', errors='ignore')
                     
-                    # Clean up the SQL for readability (replace multiple spaces/newlines with single space)
+                    # Clean up the SQL for readability
                     cleaned_content = re.sub(r'\s+', ' ', content).strip()
                     
-                    # Extract key information from SQL file
+                    # Extract key information
                     tables_found = re.findall(r'CREATE TABLE\s+(\w+)', content, re.IGNORECASE)
                     inserts_found = re.findall(r'INSERT INTO\s+(\w+)', content, re.IGNORECASE)
-                    selects_found = re.findall(r'SELECT.*?FROM\s+(\w+)', content, re.IGNORECASE | re.DOTALL)
                     
-                    # Create a comprehensive summary of the SQL file
+                    # Create summary
                     summary = f"SQL FILE: {file.name}\n"
                     summary += f"File Size: {len(content)} characters\n"
                     
                     if tables_found:
                         summary += f"📊 Tables Defined: {', '.join(tables_found)}\n"
                     
-                    # Also look for column definitions
+                    # Table details
                     table_details = []
                     for table_match in re.finditer(r'CREATE TABLE\s+(\w+)\s*\(([^)]+)\)', content, re.IGNORECASE | re.DOTALL):
                         table_name = table_match.group(1)
                         columns = table_match.group(2)
-                        # Extract column names (simple extraction)
                         col_matches = re.findall(r'\b(\w+)\s+[A-Z]+', columns[:500])
                         if col_matches:
                             table_details.append(f"  • {table_name}: {', '.join(col_matches[:5])}")
@@ -113,14 +227,14 @@ def load_all_documents():
                         unique_inserts = list(set(inserts_found))
                         summary += f"📝 Data Inserts Into: {', '.join(unique_inserts)}\n"
                     
-                    # Include first 2500 chars of actual SQL content
+                    # Preview
                     preview = cleaned_content[:2500]
                     if len(cleaned_content) > 2500:
                         preview += "... [truncated]"
                     
                     full_content = f"{summary}\n\n📄 SQL CONTENT PREVIEW:\n```sql\n{preview}\n```"
                     
-                    # Create document from SQL file
+                    # Create document
                     sql_doc = Document(
                         page_content=full_content,
                         metadata={
@@ -137,7 +251,6 @@ def load_all_documents():
                     
                 except Exception as e:
                     print(f"[ingest] ❌ Failed to load SQL file {file}: {e}")
-                    # Create a simple document anyway
                     try:
                         simple_doc = Document(
                             page_content=f"SQL File: {file.name}\nUnable to parse content fully.",
@@ -146,7 +259,7 @@ def load_all_documents():
                         docs.append(simple_doc)
                     except:
                         pass
-                continue  # Skip the rest of the loop for SQL files
+                continue
 
             # PDF FILES
             if suffix == ".pdf":
@@ -154,7 +267,7 @@ def load_all_documents():
                 try:
                     pdf_docs = PyPDFLoader(str(file)).load()
                     non_empty_pages = sum(1 for d in pdf_docs if (d.page_content or "").strip())
-                    # If PDF is mostly empty images, try OCR
+                    # If PDF is mostly empty, try OCR
                     if non_empty_pages < max(1, len(pdf_docs) // 2):
                         print("[ingest] PDF text extraction is sparse — attempting OCR fallback.")
                         ocr_docs = ocr_pdf_to_documents(str(file))
@@ -162,10 +275,11 @@ def load_all_documents():
                             pdf_docs = ocr_docs
                     for d in pdf_docs:
                         d.metadata["source"] = file.name
+                        d.metadata["file_type"] = "pdf"
                     docs.extend(pdf_docs)
                     print(f"[ingest] ✓ PDF loaded: {file.name} ({len(pdf_docs)} pages)")
                 except Exception as e:
-                    print(f"[ingest] Standard PDF load failed, trying OCR directly: {e}")
+                    print(f"[ingest] Standard PDF load failed, trying OCR: {e}")
                     ocr_docs = ocr_pdf_to_documents(str(file))
                     docs.extend(ocr_docs)
 
@@ -175,6 +289,7 @@ def load_all_documents():
                 txt_docs = TextLoader(str(file), encoding='utf-8', autodetect_encoding=True).load()
                 for d in txt_docs:
                     d.metadata["source"] = file.name
+                    d.metadata["file_type"] = "txt"
                 docs.extend(txt_docs)
                 print(f"[ingest] ✓ TXT loaded: {file.name}")
 
@@ -184,17 +299,16 @@ def load_all_documents():
                 csv_docs = CSVLoader(str(file)).load()
                 for d in csv_docs:
                     d.metadata["source"] = file.name
+                    d.metadata["file_type"] = "csv"
                 docs.extend(csv_docs)
                 print(f"[ingest] ✓ CSV loaded: {file.name}")
 
-            # EXCEL FILES
+            # EXCEL FILES - USE ENHANCED LOADER
             elif suffix in [".xls", ".xlsx"]:
-                print(f"[ingest] Loading XLSX/XLS (Unstructured) → {file}")
-                excel_docs = UnstructuredExcelLoader(str(file)).load()
-                for d in excel_docs:
-                    d.metadata["source"] = file.name
+                # Use enhanced Excel loader instead of UnstructuredExcelLoader
+                excel_docs = load_excel_enhanced(str(file))
                 docs.extend(excel_docs)
-                print(f"[ingest] ✓ Excel loaded: {file.name}")
+                # Already prints status inside load_excel_enhanced
 
             # OTHER DOCUMENT TYPES (Word, PowerPoint, HTML)
             elif suffix in [".doc", ".docx", ".ppt", ".pptx", ".html", ".htm"]:
@@ -202,6 +316,13 @@ def load_all_documents():
                 other_docs = UnstructuredLoader(str(file)).load()
                 for d in other_docs:
                     d.metadata["source"] = file.name
+                    # Set appropriate file_type
+                    if suffix in [".doc", ".docx"]:
+                        d.metadata["file_type"] = "word"
+                    elif suffix in [".ppt", ".pptx"]:
+                        d.metadata["file_type"] = "powerpoint"
+                    elif suffix in [".html", ".htm"]:
+                        d.metadata["file_type"] = "html"
                 docs.extend(other_docs)
                 print(f"[ingest] ✓ {suffix} loaded: {file.name}")
 
@@ -211,30 +332,25 @@ def load_all_documents():
 
         except Exception as e:
             print(f"[ingest] ❌ Failed to load {file}: {e}")
+            import traceback
+            traceback.print_exc()
 
     # Summary of loaded documents
     if len(docs) == 0:
         print(f"[ingest] ⚠ WARNING: No documents found or extracted in ./{DOCS_DIR} folder!")
     else:
-        # Count by file type
+        # Count by file type using the metadata
         file_types = defaultdict(int)
         for doc in docs:
-            source = doc.metadata.get("source", "")
-            if source.endswith(".sql"):
-                file_types["sql"] += 1
-            elif source.endswith(".pdf"):
-                file_types["pdf"] += 1
-            elif source.endswith(".txt"):
-                file_types["txt"] += 1
-            elif source.endswith(".csv"):
-                file_types["csv"] += 1
-            elif source.endswith((".xls", ".xlsx")):
-                file_types["excel"] += 1
-            else:
-                file_types["other"] += 1
+            file_type = doc.metadata.get("file_type", "unknown")
+            file_types[file_type] += 1
         
+        print(f"\n[ingest] {'='*60}")
         print(f"[ingest] ✅ Loaded {len(docs)} raw document sections.")
-        print(f"[ingest] File type breakdown: {dict(file_types)}")
+        print(f"[ingest] 📊 File type breakdown:")
+        for ftype, count in sorted(file_types.items()):
+            print(f"[ingest]   - {ftype}: {count} documents")
+        print(f"[ingest] {'='*60}\n")
         
     return docs
 
@@ -246,10 +362,15 @@ def split_into_chunks(docs):
     chunks = splitter.split_documents(docs)
     print(f"[ingest] Created {len(chunks)} chunks.")
     
-    # Show chunk size distribution
-    if chunks:
-        sizes = [len(chunk.page_content) for chunk in chunks[:10]]
-        print(f"[ingest] Sample chunk sizes: {sizes}")
+    # Show breakdown by file type
+    chunk_types = defaultdict(int)
+    for chunk in chunks:
+        ftype = chunk.metadata.get("file_type", "unknown")
+        chunk_types[ftype] += 1
+    
+    print(f"[ingest] Chunk breakdown by file type:")
+    for ftype, count in sorted(chunk_types.items()):
+        print(f"[ingest]   - {ftype}: {count} chunks")
     
     return chunks
 
@@ -271,11 +392,20 @@ def build_vectorstore(chunks):
         
         # Verify it was created
         collection = vectordb.get()
-        print(f"[ingest] Verification: Chroma DB contains {len(collection.get('documents', []))} document chunks.")
+        doc_count = len(collection.get('documents', []))
+        print(f"[ingest] Verification: Chroma DB contains {doc_count} document chunks.")
+        
+        # Check Excel chunks specifically
+        metadatas = collection.get('metadatas', [])
+        excel_chunks = sum(1 for m in metadatas if m and m.get('file_type') == 'excel')
+        if excel_chunks > 0:
+            print(f"[ingest] ✓ Excel chunks in database: {excel_chunks}")
         
         return vectordb
     except Exception as e:
         print(f"[ingest] ❌ Failed to build Chroma DB: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def run_ingestion_if_needed():
@@ -288,49 +418,32 @@ def run_ingestion_if_needed():
         print(f"[ingest] ✅ Created '{DOCS_DIR}'. Please add documents and restart.")
         return
 
-    # Check if there are any files in docs directory
+    # Check if there are any files
     files = list(Path(DOCS_DIR).iterdir())
     if not files:
         print(f"[ingest] ⚠ No files found in '{DOCS_DIR}'. Please add documents.")
         return
     
-    # More robust check for whether to re-ingest
     force_reingest = False
     
-    # Check if DB dir doesn't exist
+    # Check if DB exists
     if not os.path.exists(DB_DIR):
         print(f"[ingest] No DB directory '{DB_DIR}' found → Running ingestion...")
         force_reingest = True
-    
-    # Check if DB dir is empty
     elif not os.listdir(DB_DIR):
         print(f"[ingest] DB directory '{DB_DIR}' is empty → Running ingestion...")
         force_reingest = True
-    
-    # Check if there are new files in docs folder
     else:
         try:
-            # Get list of current files in docs
             current_files = sorted([f.name for f in Path(DOCS_DIR).iterdir() if f.is_file()])
-            
-            # Check if we have a record of what was ingested
             record_file = os.path.join(DB_DIR, "ingestion_record.txt")
+            
             if os.path.exists(record_file):
                 with open(record_file, 'r', encoding='utf-8') as f:
                     previous_files = f.read().splitlines()
                 
-                current_set = set(current_files)
-                previous_set = set(previous_files)
-                
-                if current_set != previous_set:
-                    print(f"[ingest] 📦 New or changed files detected:")
-                    new_files = current_set - previous_set
-                    removed_files = previous_set - current_set
-                    if new_files:
-                        print(f"[ingest]   Added: {', '.join(new_files)}")
-                    if removed_files:
-                        print(f"[ingest]   Removed: {', '.join(removed_files)}")
-                    print(f"[ingest]   → Running ingestion...")
+                if set(current_files) != set(previous_files):
+                    print(f"[ingest] 📦 File changes detected → Running ingestion...")
                     force_reingest = True
                 else:
                     print(f"[ingest] ✅ DB is up-to-date with current files.")
@@ -339,14 +452,13 @@ def run_ingestion_if_needed():
                 force_reingest = True
                 
         except Exception as e:
-            print(f"[ingest] ⚠ Error checking for new files: {e}")
-            # When in doubt, re-ingest
+            print(f"[ingest] ⚠ Error checking files: {e}")
             force_reingest = True
     
     if force_reingest:
-        print(f"[ingest] {'='*50}")
+        print(f"\n[ingest] {'='*60}")
         print(f"[ingest] STARTING DOCUMENT INGESTION")
-        print(f"[ingest] {'='*50}")
+        print(f"[ingest] {'='*60}\n")
         
         docs = load_all_documents()
         if docs:
@@ -356,7 +468,7 @@ def run_ingestion_if_needed():
             vectordb = build_vectorstore(chunks)
             
             if vectordb:
-                # Save record of what was ingested
+                # Save ingestion record
                 try:
                     current_files = sorted([f.name for f in Path(DOCS_DIR).iterdir() if f.is_file()])
                     record_file = os.path.join(DB_DIR, "ingestion_record.txt")
@@ -366,7 +478,9 @@ def run_ingestion_if_needed():
                 except Exception as e:
                     print(f"[ingest] ⚠ Could not save ingestion record: {e}")
                 
-                print(f"[ingest] ✅ Ingestion complete!")
+                print(f"\n[ingest] {'='*60}")
+                print(f"[ingest] ✅ INGESTION COMPLETE!")
+                print(f"[ingest] {'='*60}\n")
             else:
                 print(f"[ingest] ❌ Ingestion failed - could not build vector store.")
         else:
@@ -375,4 +489,15 @@ def run_ingestion_if_needed():
         print(f"[ingest] ✅ DB already exists with up-to-date content → Skipping ingestion.")
 
 if __name__ == "__main__":
+    import sys
+    
+    # Check for --force flag
+    if "--force" in sys.argv or "-f" in sys.argv:
+        print("[ingest] 🔄 FORCE RE-INGESTION requested via command line flag")
+        print("[ingest] Deleting existing database...\n")
+        if os.path.exists(DB_DIR):
+            import shutil
+            shutil.rmtree(DB_DIR)
+            print("[ingest] ✓ Deleted old database\n")
+    
     run_ingestion_if_needed()

@@ -1,0 +1,21 @@
+[
+  {
+    "id": "20251223_114700",
+    "title": "hi",
+    "timestamp": "2025-12-23T11:47:46.810401",
+    "messages": [
+      {
+        "role": "assistant",
+        "content": "👋 **Welcome!**\n\nI can help you with:\n- 📄 Questions about your documents\n- 🗄️ Database queries\n- 🔍 Information search\n\n**Status:** 895 document chunks loaded\n✅ Database connected\n\nTry asking: *\"What files do you have?\"* or *\"What's in the Excel sheet?\"*\n"
+      },
+      {
+        "role": "user",
+        "content": "hi"
+      },
+      {
+        "role": "assistant",
+        "content": "I cannot answer the question. The provided documents do not contain any information about “hi” or any questions related to the provided text."
+      }
+    ]
+  }
+]
